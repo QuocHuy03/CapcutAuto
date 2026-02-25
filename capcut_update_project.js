@@ -36,32 +36,66 @@ for (let i = 2; i < process.argv.length; i++) {
 }
 
 const projectDir = args.project ||
-    'C:\\Users\\huylq\\AppData\\Local\\CapCut\\User Data\\Projects\\com.lveditor.draft\\0225';
+    'C:\\Users\\LYN HIEN\\AppData\\Local\\CapCut\\User Data\\Projects\\com.lveditor.draft\\0224';
 const animId = args.anim || '6798332733694153230';
 const animDurMs = parseInt(args.animdur || '500', 10);
 const doSync = !args.nosync;
 const doAnim = !args.noanim;
+const effectId = args.effect || '';            // ID video_effect (ví dụ: 7463081288182828341)
+const doEffect = !!effectId && !args.noeffect; // Có thêm video effect hay không
 const dryRun = !!args.dry;
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 function uuid() { return crypto.randomUUID().toUpperCase(); }
 function toFwd(p) { return p.replace(/\\/g, '/'); }
 
-function resolveAnimPath(effectId) {
+function loadEffectCatalog() {
     const catFile = path.join(__dirname, 'effect_catalog.json');
-    if (fs.existsSync(catFile)) {
-        const cat = JSON.parse(fs.readFileSync(catFile, 'utf8'));
-        const found = cat.find(e => e.id === effectId);
-        if (found) return toFwd(found.path);
+    if (!fs.existsSync(catFile)) return null;
+    try {
+        return JSON.parse(fs.readFileSync(catFile, 'utf8'));
+    } catch {
+        return null;
     }
-    // Direct scan
-    const effectBase = 'C:\\Users\\huylq\\AppData\\Local\\CapCut\\User Data\\Cache\\effect';
+}
+
+// Trả về { path, name, type } cho 1 effectId (dùng cho cả animation & video_effect)
+function resolveEffectInfo(effectId) {
+    const cat = loadEffectCatalog();
+    if (cat) {
+        const found = cat.find(e => e.id === effectId);
+        if (found) {
+            return {
+                path: toFwd(found.path),
+                name: found.name || '',
+                type: found.type || ''
+            };
+        }
+    }
+
+    // Fallback: quét trực tiếp thư mục Cache/effect/<id>
+    // Cố gắng suy ra base từ projectDir nếu có dạng ...\User Data\Projects\...
+    let effectBase = 'C:\\Users\\LYN HIEN\\AppData\\Local\\CapCut\\User Data\\Cache\\effect';
+    const m = projectDir.match(/^(.*?\\AppData\\Local\\CapCut\\User Data)\\Projects\\/i);
+    if (m) {
+        effectBase = path.join(m[1], 'Cache', 'effect');
+    }
+
     const ep = path.join(effectBase, effectId);
     if (fs.existsSync(ep)) {
         const hashes = fs.readdirSync(ep).filter(n => !n.endsWith('_tmp'));
-        if (hashes.length > 0) return toFwd(path.join(ep, hashes[0]));
+        if (hashes.length > 0) {
+            const p = toFwd(path.join(ep, hashes[0]));
+            return { path: p, name: '', type: '' };
+        }
     }
-    return '';
+    return { path: '', name: '', type: '' };
+}
+
+// Animation cũ vẫn dùng như trước, nhưng dựa trên resolveEffectInfo
+function resolveAnimPath(effectId) {
+    const info = resolveEffectInfo(effectId);
+    return info.path;
 }
 
 // ── Load draft_content.json ───────────────────────────────────────────────
@@ -249,6 +283,105 @@ if (doAnim) {
     console.log(`   ✅ Đã thêm animation vào ${videoSegs.length} segments`);
 } else {
     console.log('\n⏭ Bỏ qua animation (--noanim)');
+}
+
+// ── VIDEO EFFECT: thêm video effect vào từng segment ─────────────────────
+if (doEffect) {
+    console.log('\n🎬 Thêm video effect...');
+    const effectInfo = resolveEffectInfo(effectId);
+
+    if (!effectInfo.path) {
+        console.warn('⚠️  Không tìm thấy effect path cho id=' + effectId);
+        console.warn('   Chạy: node scan_effects.js để rebuild catalog (hoặc kiểm tra lại effectId)');
+    } else {
+        console.log(`   Effect: ${effectId}`);
+        if (effectInfo.name) console.log(`   Name:   ${effectInfo.name}`);
+        console.log(`   Path:   ${effectInfo.path}`);
+    }
+
+    if (!draft.materials.video_effects) {
+        draft.materials.video_effects = [];
+    }
+
+    for (const seg of videoSegs) {
+        // Tìm xem segment đã trỏ tới video_effect nào chưa
+        let vfxMatId = null;
+        if (seg.extra_material_refs && Array.isArray(seg.extra_material_refs)) {
+            for (const refId of seg.extra_material_refs) {
+                const existing = draft.materials.video_effects.find(v => v.id === refId);
+                if (existing) { vfxMatId = refId; break; }
+            }
+        } else {
+            seg.extra_material_refs = [];
+        }
+
+        // Nếu chưa có → tạo mới và chèn ID vào extra_material_refs
+        if (!vfxMatId) {
+            vfxMatId = uuid();
+            const insertAt = Math.min(2, seg.extra_material_refs.length); // chèn gần đầu (sau speed, placeholder)
+            seg.extra_material_refs.splice(insertAt, 0, vfxMatId);
+            console.log(`   seg [${seg.id.slice(0, 8)}...] → tạo videoEffect mới: ${vfxMatId.slice(0, 8)}...`);
+        } else {
+            console.log(`   seg [${seg.id.slice(0, 8)}...] → cập nhật videoEffect: ${vfxMatId.slice(0, 8)}...`);
+        }
+
+        // Upsert object trong materials.video_effects
+        let vfxMat = draft.materials.video_effects.find(v => v.id === vfxMatId);
+        if (!vfxMat) {
+            const template = draft.materials.video_effects[0];
+            if (template) {
+                vfxMat = JSON.parse(JSON.stringify(template));
+            } else {
+                vfxMat = {
+                    adjust_params: [],
+                    algorithm_artifact_path: '',
+                    apply_target_type: 0,
+                    apply_time_range: null,
+                    bind_segment_id: '',
+                    category_id: '',
+                    category_name: '',
+                    common_keyframes: [],
+                    covering_relation_change: 0,
+                    disable_effect_faces: [],
+                    effect_id: effectId,
+                    effect_mask: [],
+                    enable_mask: true,
+                    enable_video_mask_shadow: true,
+                    enable_video_mask_stroke: true,
+                    formula_id: '',
+                    id: vfxMatId,
+                    item_effect_type: 0,
+                    name: effectInfo.name || '',
+                    path: effectInfo.path || '',
+                    platform: 'all',
+                    render_index: 11000,
+                    request_id: '',
+                    resource_id: effectId,
+                    source_platform: 1,
+                    sub_type: 0,
+                    time_range: null,
+                    track_render_index: 0,
+                    transparent_params: '',
+                    type: 'video_effect',
+                    value: 1.0,
+                    version: ''
+                };
+            }
+            draft.materials.video_effects.push(vfxMat);
+        }
+
+        // Cập nhật các field chính theo effectId hiện tại
+        vfxMat.id = vfxMatId;
+        vfxMat.type = 'video_effect';
+        if (effectInfo.path) vfxMat.path = effectInfo.path;
+        if (effectInfo.name) vfxMat.name = effectInfo.name;
+        vfxMat.effect_id = effectId;
+        vfxMat.resource_id = effectId;
+    }
+
+    console.log(`   ✅ Đã thêm video effect vào ${videoSegs.length} segments`);
+} else {
+    console.log('\n⏭ Bỏ qua video effect (--noeffect hoặc không chỉ định --effect)');
 }
 
 // ── Write ─────────────────────────────────────────────────────────────────

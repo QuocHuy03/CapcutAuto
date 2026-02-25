@@ -13,7 +13,7 @@ const crypto = require('crypto');
 const readline = require('readline');
 
 const projectDir = process.argv[2] ||
-    'C:\\Users\\huylq\\AppData\\Local\\CapCut\\User Data\\Projects\\com.lveditor.draft\\0225';
+    'C:\\Users\\LYN HIEN\\AppData\\Local\\CapCut\\User Data\\Projects\\com.lveditor.draft\\0224';
 
 // ── File scanning ──────────────────────────────────────────────────────────
 function md5File(fp) {
